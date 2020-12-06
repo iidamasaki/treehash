@@ -1,0 +1,50 @@
+#!/bin/bash
+
+readonly BLOCK_SIZE=1048576
+
+print_usage_and_exit() {
+   echo "Usage: $(basename ${0}) <file>" >&2
+   exit 1
+}
+if [ $# -ne 1 ]; then
+   print_usage_and_exit
+fi
+if [ -e "${1}" ]; then
+   file="${1}"
+else
+   echo "Not found: ${1}" >&2
+   print_usage_and_exit
+fi
+
+readonly tmp_file=$(mktemp)
+trap 'rm "${tmp_file}"' EXIT INT TERM HUP
+
+((file_size = $(wc -c < "${file}")))
+((block_count = file_size / BLOCK_SIZE))
+if ((block_count * BLOCK_SIZE < file_size)); then
+   ((block_count++))
+fi
+
+hashes=()
+calc_hash() {
+   echo $(openssl dgst -hex -sha256 "${1}" | awk '{print $NF}')
+}
+concat_tail_two_hashes() {
+   echo "${hashes[${#hashes[@]}-2]}${hashes[${#hashes[@]}-1]}" | xxd -r -p > "${tmp_file}"
+   hashes=(${hashes[@]:0:((${#hashes[@]}-2))})
+   hashes+=($(calc_hash "${tmp_file}"))
+}
+for ((i = 1; i <= block_count; i++)); do
+   dd if="${file}" of="${tmp_file}" bs=${BLOCK_SIZE} skip=$((i - 1)) count=1 >/dev/null 2>&1
+   hashes+=($(calc_hash "${tmp_file}"))
+   for ((j = 1; 2**j <= i; j++)); do
+      if ((i % 2**j == 0)); then
+         concat_tail_two_hashes
+      fi
+   done
+done
+while ((${#hashes[@]} > 1)); do
+   concat_tail_two_hashes
+done
+echo "${hashes[0]}"
+
